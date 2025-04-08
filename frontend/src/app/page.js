@@ -3,13 +3,16 @@ import Head from "next/head";
 import { useState,useEffect } from "react";
 
 export default function Home() {
-  const [walletState, setWalletState] = useState({
-    status: "disconnected", // disconnected, connecting, connected, error
-    address: "",
-    signature: "",
-    errorMessage: "",
-    walletType: "",
-  });
+  // Update your wallet state to include the message
+const [walletState, setWalletState] = useState({
+  status: "disconnected",
+  address: "",
+  signature: "",
+  errorMessage: "",
+  walletType: "",
+  transactionHash: "",
+  message: "", // Add this field to store the message
+});
 
   // Add this after your useState section
   const [walletDetectionState, setWalletDetectionState] = useState({
@@ -126,9 +129,6 @@ const safeGetWalletProvider = () => {
     }
   };
 
-  // Simplified connection logic focusing only on Bitcoin operations
-  // Complete the connectWallet function to handle Bitcoin-specific operations
-  // Updated connection logic to handle XFI provider
 // Updated connection logic for XFI with proper API methods
 const connectWallet = async () => {
   try {
@@ -279,6 +279,147 @@ const connectWallet = async () => {
     });
   };
 
+
+  const signMessage = async () => {
+    try {
+      // Update state to show signing is in progress
+      setWalletState({
+        ...walletState,
+        status: "signing",
+      });
+  
+      const walletInfo = safeGetWalletProvider();
+      if (!walletInfo) {
+        throw new Error("Wallet connection lost. Please reconnect.");
+      }
+  
+      // Make sure we have an address
+      if (!walletState.address) {
+        throw new Error("No Bitcoin address available for signing");
+      }
+  
+      const { type, provider } = walletInfo;
+      // Store the message in a variable so it's consistent across the function
+      const messageTime = new Date().toISOString();
+      const message = `Verify ownership of ${walletState.address} at ${messageTime}`;
+      
+      // Explicitly log the message and address to check for undefined values
+      console.log("Message to sign:", message);
+      console.log("Address used for signing:", walletState.address);
+      
+      let signature = "";
+      
+      console.log(`Attempting to sign message with ${type} provider:`, provider);
+      
+      // For XFI provider
+      if (type === "xfi") {
+        if (provider.bitcoin) {
+          console.log("Bitcoin methods:", Object.keys(provider.bitcoin));
+        }
+        
+        try {
+          if (provider.bitcoin && typeof provider.bitcoin.signMessage === 'function') {
+            console.log("Using bitcoin.signMessage");
+            // Make sure parameters are not undefined
+            if (!message) throw new Error("Message is undefined");
+            if (!walletState.address) throw new Error("Address is undefined");
+            
+            signature = await provider.bitcoin.signMessage(message, walletState.address);
+          } 
+          else if (typeof provider.signMessage === 'function') {
+            console.log("Using provider.signMessage");
+            signature = await provider.signMessage(message, walletState.address);
+          }
+          else if (typeof provider.sign === 'function') {
+            console.log("Using provider.sign");
+            signature = await provider.sign(message, walletState.address);
+          }
+          else {
+            throw new Error("No compatible signing method found in this wallet");
+          }
+        } catch (signingError) {
+          console.error("XFI signing error:", signingError);
+          throw signingError;
+        }
+      } 
+      // For Ctrl wallet and other providers
+      else {
+        try {
+          // IMPORTANT FIX: Make sure we're consistent with parameter order
+          // Some wallets expect [message, address], others expect [address, message]
+          console.log("Trying btc_signMessage");
+          signature = await provider.request({
+            method: "btc_signMessage",
+            params: [message, walletState.address], // Changed order here - message first
+          });
+        } catch (e) {
+          console.warn("btc_signMessage failed, trying alternative order:", e);
+          
+          try {
+            // Try with reversed parameter order
+            signature = await provider.request({
+              method: "btc_signMessage",
+              params: [walletState.address, message],
+            });
+          } catch (e1) {
+            console.warn("btc_signMessage with reversed params failed, trying personal_sign:", e1);
+            
+            // Try ethereum style personal_sign
+            try {
+              console.log("Trying personal_sign");
+              signature = await provider.request({
+                method: "personal_sign",
+                params: [message, walletState.address],
+              });
+            } catch (e2) {
+              console.warn("personal_sign failed:", e2);
+              
+              // Try standard signMessage if available
+              try {
+                if (typeof provider.signMessage === 'function') {
+                  console.log("Trying provider.signMessage directly");
+                  signature = await provider.signMessage(message, walletState.address);
+                } else {
+                  throw new Error("No compatible signing method found");
+                }
+              } catch (e3) {
+                console.error("All signing methods failed:", e3);
+                throw new Error(`Message signing not supported: ${safeErrorMessage(e3)}`);
+              }
+            }
+          }
+        }
+      }
+  
+      console.log("Message signing successful:", signature);
+      
+      // Update state with signature and save the message we signed
+      setWalletState({
+        ...walletState,
+        status: "connected",
+        signature: signature || "Signature not available",
+        message: message, // Store the message that was signed
+        errorMessage: "",
+      });
+    } catch (err) {
+      console.error("Message signing error:", err);
+      setWalletState({
+        ...walletState,
+        status: "error",
+        errorMessage: `Message signing failed: ${safeErrorMessage(err)}`,
+      });
+      
+      // Return to connected state after error
+      setTimeout(() => {
+        setWalletState({
+          ...walletState,
+          status: "connected",
+          errorMessage: "",
+        });
+      }, 5000);
+    }
+  };
+
   return (
     <div>
       <Head>
@@ -295,46 +436,94 @@ const connectWallet = async () => {
           </p>
         </div>
       )}
-      <div className="min-h-screen bg-gray-50 flex justify-center items-center p-4">
+      <div className="min-h-screen bg-red-700 flex justify-center items-center p-4">
         <div className="bg-white p-6 rounded-xl shadow-md w-full max-w-md">
           <h1 className="text-2xl font-bold mb-6 text-center">
             Ctrl Bitcoin Wallet
           </h1>
 
-          {walletState.status === "connected" ? (
-            <div className="space-y-4">
-              <div className="bg-green-50 p-4 rounded-lg">
-                <p className="text-green-700 font-medium">
-                  Successfully connected!
-                </p>
-                <p className="text-green-600 text-sm mt-1">
-                  Wallet type: {walletState.walletType}
-                </p>
-              </div>
+          {walletState.status === "connected" || walletState.status === "signing" ? (
+  <div className="space-y-4">
+    <div className="bg-green-50 p-4 rounded-lg">
+      <p className="text-green-700 font-medium">
+        Successfully connected!
+      </p>
+      <p className="text-green-600 text-sm mt-1">
+        Wallet type: {walletState.walletType}
+      </p>
+    </div>
 
-              <div className="border border-gray-200 rounded-lg p-4">
-                <div className="mb-3">
-                  <p className="text-sm text-gray-500">BTC Address</p>
-                  <p className="font-mono text-sm break-all bg-gray-50 p-2 rounded">
-                    {walletState.address}
-                  </p>
-                </div>
+    <div className="border border-gray-200 rounded-lg p-4">
+      <div className="mb-3">
+        <p className="text-sm text-black">BTC Address</p>
+        <p className="font-mono text-sm break-all bg-red-700 p-2 rounded">
+          {walletState.address}
+        </p>
+      </div>
 
-                <div>
-                  <p className="text-sm text-gray-500">Signature</p>
-                  <p className="font-mono text-sm break-all bg-gray-50 p-2 rounded">
-                    {walletState.signature}
-                  </p>
-                </div>
-              </div>
+      <div>
+        <p className="text-sm text-black">Signature</p>
+        <p className="font-mono text-sm break-all bg-red-700 p-2 rounded">
+          {walletState.signature}
+        </p>
+      </div>
+      
+      {walletState.transactionHash && (
+        <div className="mt-3">
+          <p className="text-sm text-black">Transaction Hash</p>
+          <p className="font-mono text-sm break-all bg-red-700 p-2 rounded">
+            {walletState.transactionHash}
+          </p>
+        </div>
+      )}
+      <div className="mb-3">
+  <p className="text-sm text-black">Message</p>
+  <p className="font-mono text-sm break-all bg-red-700 p-2 rounded">
+    {walletState.message || `Verify ownership of ${walletState.address} at ${new Date().toISOString()}`}
+  </p>
+</div>
 
-              <button
-                onClick={disconnectWallet}
-                className="w-full bg-gray-500 hover:bg-gray-600 text-white py-2 px-4 rounded-lg transition-colors"
-              >
-                Disconnect
-              </button>
-            </div>
+<div className="mb-3">
+  <p className="text-sm text-black">Message</p>
+  <p className="font-mono text-sm break-all bg-red-700 p-2 rounded">
+    Verify ownership of {walletState.address} at {new Date().toISOString()}
+  </p>
+</div>
+    </div>
+
+    {walletState.status === "error" && (
+      <div className="bg-red-50 p-4 rounded-lg">
+        <p className="text-red-700 font-medium">Error</p>
+        <p className="text-red-600 text-sm mt-1">
+          {walletState.errorMessage}
+        </p>
+      </div>
+    )}
+
+    <div className="flex flex-col sm:flex-row gap-3">
+<button
+  onClick={signMessage}
+  disabled={walletState.status === "signing"}
+  className="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 px-4 rounded-lg transition-colors disabled:bg-green-300"
+>
+  {walletState.status === "signing" ? (
+    <span className="flex items-center justify-center">
+      <span className="animate-spin h-4 w-4 border-b-2 border-white mr-2 rounded-full"></span>
+      Signing...
+    </span>
+  ) : (
+    "Sign Message"
+  )}
+</button>
+      
+      <button
+        onClick={disconnectWallet}
+        className="flex-1 bg-red-7000 hover:bg-gray-600 text-white py-2 px-4 rounded-lg transition-colors"
+      >
+        Disconnect
+      </button>
+    </div>
+  </div>
           ) : (
             <div className="space-y-4">
               {walletState.status === "error" && (
